@@ -9,11 +9,12 @@ authors = ["Gabe Joseph <gabriel_joseph@partner.nps.gov>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "*"
+python = "^3.6"
 iyore = "*"
 future = "*"
 numpy = "*"
-pandas = "==0.18.1"
+pandas = "*"
+xarray = "*"
 tqdm = "*"
 
 [[tool.poetry.source]]

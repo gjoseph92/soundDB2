@@ -8,6 +8,7 @@ from .accessor import Accessor
 
 import pandas as pd
 import numpy as np
+import xarray as xr
 import re
 import collections
 import warnings
@@ -33,7 +34,7 @@ under its ``endpointName``.
 
 #     columnNames = ['SiteID', 'date', '12.5', '15.8', '20', '25', '31.5', '40', '50', '63', '80', '100', '125', '160', '200', '250', '315', '400', '500', '630', '800', '1000', '1250', '1600', '2000', '2500', '3150', '4000', '5000', '6300', '8000', '10000', '12500', '16000', '20000', 'dBA', 'dBC', 'dBF', 'Voltage', 'WindSpeed', 'WindDir', 'TempIns', 'TempOut', 'Humidity', 'INVID', 'INSID', 'GChar1', 'GChar2', 'GChar3', 'AdjustmentsApplied', 'CalibrationAdjustment', 'GPSTimeAdjustment', 'GainAdjustment', 'Status']
 #     index_index = 1 # Default position of the index column (STime)
-    
+
 #     if columns == "spl":
 #         # Convenience option for just getting columns containing actual SPL data
 #         columns = columnNames[:38]
@@ -184,7 +185,7 @@ class NVSPL(Accessor):
             presentNumericCols = df.columns.intersection(numericCols)
             if len(presentNumericCols) > 0:
                 # df[presentNumericCols] = df[presentNumericCols].convert_objects(convert_dates= False, convert_numeric= True, convert_timedeltas= False, copy= False)
-                df[presentNumericCols].astype('float32', copy= False, raise_on_error= False)
+                df[presentNumericCols].astype('float32', copy= False, errors= 'ignore')
 
         except KeyError:
             pass
@@ -287,7 +288,7 @@ class SRCID(Accessor):
 
                 nanCols = data.columns.difference(("userName", "tagDate"))
                 data.loc[ noisefree, nanCols ] = np.nan
-        
+
         # Parse tagDate to datetime (though old versions don't have tagDate)
         if 'tagDate' in data.columns:
             data.tagDate = pd.to_datetime(data.tagDate, infer_datetime_format= True)
@@ -323,18 +324,20 @@ class LoudEvents(Accessor):
                             parse_dates= True,
                             infer_datetime_format= True)
 
-        if data.index.name is not None: data.index.name = data.index.name.lower()
+        # if data.index.name is not None: data.index.name = data.index.name.lower()
         data.columns = list(range(24)) * 3
+        arr_2d = xr.DataArray(data, dims=["date", "hour"])
+        return xr.concat([arr_2d[:, 0:24],
+                         arr_2d[:, 24:48],
+                         arr_2d[:, 48:72]],
+                        dim=pd.Index(["above", "all", "percent"], name="type"))
 
-        paneldata = pd.Panel({
-                                "above": data.iloc[:, 0:24],
-                                "all": data.iloc[:, 24:48],
-                                "percent": data.iloc[:, 48:72]
-                            })
-
-        paneldata.minor_axis.name = "hour"
-
-        return paneldata
+        # TODO(davyd): should this be a Dataset instead? (like this)
+        # return xr.Dataset({
+        #     "above": arr_2d[:, 0:24],
+        #     "all": arr_2d[:, 24:48],
+        #     "percent": arr_2d[:, 48:72]
+        # })
 
 class Audibility(Accessor):
     """
@@ -459,7 +462,7 @@ class DailyPA(Accessor):
     """
     endpointName = "dailypa"
 
-    def parse(self, entry):      
+    def parse(self, entry):
         data = pd.read_csv(str(entry),
                            engine= "c",
                            sep= "\t",
@@ -481,7 +484,7 @@ class DailyPA(Accessor):
         # data.index.set_levels(datetimes, level= 'date', inplace= True)
 
         # Ensure MultiIndex sortedness
-        data.sortlevel(inplace= True)
+        data.sort_index(inplace= True)
 
         return data.apply(pd.to_numeric, raw= True, errors= "coerce")
 
@@ -512,7 +515,7 @@ class Metrics(Accessor):
                 n: DataFrame
             ...
             ...
-        
+
 
     A primary purpose of this reader is to combine multiple tables of related data in the metrics file
     into single structures. (For example, Median Hourly Metrics could have four tables, for dBA and dBT
@@ -637,15 +640,15 @@ class Metrics(Accessor):
                       - `title` : ex. "Median Hourly Metrics (dBA)", "SPLAT Detailed Average Event Counts", "L90 Contour Data (dB)"
                       - `season`: ex. "Summer", "Winter"
                       - `n`     : ex. "n = 32 days", "n = 467hrs", "n = 16"
-            
+
             `metric`: a specific kind of data. Metrics can be composed from multiple tables, using a multidimensional Panel data structure
                      (i.e. the "ambient" metric might be composed from the "Ambient (dBA)" and "Ambient (dBT)" tables
                       from both the seasons "Summer" and "Winter")
-            
+
             `metricName`: the abbreviated, canonicalized name for a metric. Table titles may change across versions,
                           but metric names should always be the same. Metrics are accessed by these names as attributes of
                           the returned named tuple
-            
+
             `tableType` : the distinguishing factor between tables of the same metric.
                           ex. "dBA", "dBT", "night", "day", "l90", "lnat", "l50", ...
                           `tableType` becomes the items axis in a metrics Panel:
@@ -744,7 +747,7 @@ class Metrics(Accessor):
                 titleLine, lines = tableLines[0], tableLines[1:]
                 cells = [ line.split("\t") for line in lines ]
                 columns, body = cells[0], cells[1:]
-                
+
                 # Split title parts, and look up the canonical table name for this metric name
                 match = titleRe.match(titleLine)
                 try:
@@ -767,7 +770,7 @@ class Metrics(Accessor):
                 except KeyError:
                     warnings.warn("Unknown metric {} (in {})".format(metric, path))
                     continue
-                    
+
                 # Get n-value from title
                 match = nRe.match(n)
                 try:
@@ -778,15 +781,15 @@ class Metrics(Accessor):
                 except (ValueError, AttributeError):
                     n = pd.to_timedelta('NaT')
                 ns[metricName][season][tableType] = n
-                
+
                 # Create DataFrame
                 df = pd.DataFrame(body)
-                
+
                 df.set_index(0, inplace= True)
                 df.index.name= None
                 df.columns = columns[1:]
                 df = df.apply(pd.to_numeric, raw= True, errors= "coerce")
-                
+
                 # Guess the type of the index (if it's noise level, or hour)
                 for axname in ("index", "columns"):
                     axis = getattr(df, axname)
@@ -798,25 +801,40 @@ class Metrics(Accessor):
                         axis = axis.str.rstrip("h").astype("int")
                         axis.name = "hour"
                         setattr(df, axname, axis)
-                
+
                 # Ensure percentTimeAbove has the same columns names in both tables: just dB instead of dBA and dBT
                 if metricName == "percentTimeAbove":
                     df.columns = df.columns.str.slice(stop= -1)
-                    
-                metrics[metricName][season][tableType] = df
 
-            ## Create Panels for each metric from their component DataFrames of each table 
-            metrics = { metricName: pd.Panel4D(panelDict) for metricName, panelDict in iteritems(metrics) }
-            for metricName, metric in iteritems(metrics):
-                # Metrics derived from a single table will have seasons as labels, and a superfluous items axis of [None]
-                # Reduce them to just a 3D panel with seasons as items axis
-                metric.labels.name = "Season"
-                metric.items.name = "Table"
-                if all( metric.items == [None] ):
-                    metrics[metricName] = metric.loc[:, None, :, :]
+                metrics[metricName][season][tableType] = xr.DataArray(df)
+
+            ## Prepare a dict of DataArrays to turn into an xarray Dataset.
+            # We concatenate each 2D table together, then concatenate those per-season 3D tables
+            # to end up with the 4D table for each metric.
+            # This is a rather dumb and lazy way of doing it, but it works for now.
+            xr_metrics = {}
+            for metricName, metric_dict in iteritems(metrics):
+                seasons = []
+                table_arrs = []
+                for season, season_dict in iteritems(metric_dict):
+                    tables, arrs = zip(*list(iteritems(season_dict)))
+                    # ^ get a list of table names, corresponding to a list of 2D DataArrays for those tables
+                    if len(tables) == 1 and tables[0] is None:
+                        # Metrics derived from a single table will have seasons as labels, and a superfluous table name of [None].
+                        # In that case, just don't create a `Table` dimension
+                        table_arr = arrs[0]
+                    else:
+                        table_arr = xr.concat(arrs, dim=pd.Index(tables, name="Table"))
+                    table_arrs.append(table_arr)
+                    seasons.append(season)
+
+                arr = xr.concat(table_arrs, dim=pd.Index(seasons, name="Season"))
+                xr_metrics[metricName] = arr
 
             ## Create DataFrame/Series of n values for each table in metric
+            # TODO(davyd): figure out how to do this as coordinates on the dataset, not just attrs
             ns = { metricName: pd.DataFrame(nVals) for metricName, nVals in iteritems(ns) }
+            # xr_ns = {}
             for metricName, n in iteritems(ns):
                 # Ns derived from a single table will have a superfluous row of NaN
                 # Reduce them to just a Series, with season as the index
@@ -824,6 +842,16 @@ class Metrics(Accessor):
                 n.index.name = "Table"
                 if all( n.index == [None] ):
                     ns[metricName] = n.iloc[0]
+                # arr = xr.DataArray(n)
+                # print(arr.dtype)
+                # print(arr)
+                # xr_ns[metricName + "_n"] = arr
+
+            ds = xr.Dataset(xr_metrics, attrs=ns)
+            return ds
+
+            # TODO(davyd): implement overall daily levels on the xarray dataset
+            # (or perhaps do it on the `xr_metrics` dict first, before turning it into a Dataset---whichever is easier)
 
             ## Combine day and night levels
             try:
